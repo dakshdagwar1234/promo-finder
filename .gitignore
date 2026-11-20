@@ -1,0 +1,6 @@
+data/
+*.zip
+.llm_cache/
+.env
+__pycache__/
+outputs*/
