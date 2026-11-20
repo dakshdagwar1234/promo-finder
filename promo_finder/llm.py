@@ -39,7 +39,7 @@ class LLM:
 
     # --- providers -------------------------------------------------------
     def _post(self, url, body, headers):
-        req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json", **headers})
+        req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json", "User-Agent": "promo-finder/1.0", **headers})
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.load(r)
 
