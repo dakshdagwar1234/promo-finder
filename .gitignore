@@ -5,3 +5,4 @@ data/
 __pycache__/
 outputs*/
 labelling/
+raw_outputs_for_drive/

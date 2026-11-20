@@ -1,0 +1,2 @@
+# Python 3.10+ standard library only.
+# No external third-party dependencies required (plain HTTP via urllib).
