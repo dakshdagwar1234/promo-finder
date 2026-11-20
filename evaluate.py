@@ -17,8 +17,8 @@ def ov(a, b):
 
 ap = argparse.ArgumentParser(); ap.add_argument("--gold", required=True); ap.add_argument("--pred", required=True); ap.add_argument("--k", type=int, default=10)
 a = ap.parse_args()
-gold = [(int(r["episode"]), t(r["start"]), t(r["end"]), r["label"].strip().lower()) for r in csv.DictReader(open(a.gold))]
-pred = json.load(open(a.pred))[:a.k]
+gold = [(int(r["episode"]), t(r["start"]), t(r["end"]), r["label"].strip().lower()) for r in csv.DictReader(open(a.gold, encoding="utf-8"))]
+pred = json.load(open(a.pred, encoding="utf-8"))[:a.k]
 def hits(p, lab):
     out = []
     for seg in p["segments"].split(" + "):
@@ -27,5 +27,5 @@ def hits(p, lab):
     return any(g[3] == lab and g[0] == ep_ and ov((g[1], g[2]), (s, e)) >= .5 for g in gold for ep_, s, e in out)
 good = sum(hits(p, "good") for p in pred); bad = sum(hits(p, "bad") for p in pred)
 gg = [g for g in gold if g[3] == "good"]
-rec = sum(any(int(p["segments"].split()[0][1:]) == g[0] and any(ov((g[1], g[2]), (t(x.split("-")[0]), t(x.split("-")[1]))) >= .5 for x in [seg.split(" ", 1)[1] for seg in p["segments"].split(" + ")]) for p in json.load(open(a.pred))) for g in gg)
+rec = sum(any(int(p["segments"].split()[0][1:]) == g[0] and any(ov((g[1], g[2]), (t(x.split("-")[0]), t(x.split("-")[1]))) >= .5 for x in [seg.split(" ", 1)[1] for seg in p["segments"].split(" + ")]) for p in json.load(open(a.pred, encoding="utf-8"))) for g in gg)
 print(f"precision@{a.k}: {good}/{len(pred)} = {good/max(1,len(pred)):.0%} | matched a 'bad' clip: {bad} | recall of gold-good: {rec}/{len(gg)}")

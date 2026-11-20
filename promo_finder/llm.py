@@ -23,12 +23,12 @@ class LLM:
         cp = os.path.join(CACHE, key + ".json")
         if os.path.exists(cp):
             self.cached += 1
-            return json.load(open(cp))
+            return json.load(open(cp, encoding="utf-8"))
         for attempt in range(retries):
             try:
                 raw = self._call(system, prompt)
                 data = _parse_json(raw)
-                json.dump(data, open(cp, "w"))
+                json.dump(data, open(cp, "w", encoding="utf-8"))
                 self.calls += 1
                 return data
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError, KeyError) as e:

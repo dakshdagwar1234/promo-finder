@@ -74,12 +74,12 @@ def main():
     picked = select(pool, a.n, a.max_per_episode)
     os.makedirs(a.out, exist_ok=True)
     rows = [row(i + 1, c) for i, c in enumerate(picked)]
-    json.dump(rows, open(f"{a.out}/promos.json", "w"), indent=2, ensure_ascii=False)
+    json.dump(rows, open(f"{a.out}/promos.json", "w", encoding="utf-8"), indent=2, ensure_ascii=False)
     flat = [{k: (v if not isinstance(v, (dict, list)) else json.dumps(v)) for k, v in r.items() if k not in ("llm", "heuristic", "stranger_test")} for r in rows]
-    with open(f"{a.out}/promos.csv", "w", newline="") as f:
+    with open(f"{a.out}/promos.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(flat[0].keys())); w.writeheader(); w.writerows(flat)
     allrows = [row(0, c) | {"rejected": bool(c.verify.get("rejected"))} for c in sorted(pool, key=lambda c: -c.final)]
-    json.dump(allrows, open(f"{a.out}/all_candidates.json", "w"), indent=2, ensure_ascii=False)
+    json.dump(allrows, open(f"{a.out}/all_candidates.json", "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 
     mode = f"{llm.provider}:{llm.model}" if llm.enabled else "heuristic-baseline (no LLM)"
     md = [f"# Promo report\n\nMode: **{mode}** | episodes: {len(eps)} | shortlisted: {len(pool)} | output: {len(rows)}\n",
@@ -92,7 +92,7 @@ def main():
     md.append("## Highest-scoring clips REJECTED by the verify pass (see failure analysis)\n")
     for c in rej:
         md.append(f"- {seg_str(c)} score {c.final:.1f}: " + (c.verify.get("issue") or "low cliffhanger/standalone (heuristic)"))
-    open(f"{a.out}/report.md", "w").write("\n".join(md))
+    open(f"{a.out}/report.md", "w", encoding="utf-8").write("\n".join(md))
     print(f"[5/5] wrote {a.out}/promos.json, promos.csv, report.md, all_candidates.json  ({time.time()-t0:.1f}s)")
     for r in rows[:5]: print(f"  #{r['rank']} {r['segments']}  score {r['score']}")
 
