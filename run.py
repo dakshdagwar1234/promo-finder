@@ -37,7 +37,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True); ap.add_argument("--out", default="outputs")
     ap.add_argument("--provider", default=None, help="gemini | anthropic | openai | none (default: env LLM_PROVIDER or none)")
-    ap.add_argument("--model", default=None); ap.add_argument("--base-url", default=None)
+    ap.add_argument("--model", default=None); ap.add_argument("--verify-model", default=None, help="verifier model for stranger test (default: env LLM_VERIFY_MODEL or scorer model)")
+    ap.add_argument("--base-url", default=None)
     ap.add_argument("--top-k", type=int, default=8, help="candidates per episode sent to the LLM")
     ap.add_argument("--n", type=int, default=15, help="promos to output"); ap.add_argument("--max-per-episode", type=int, default=2)
     ap.add_argument("--verify-top", type=int, default=40, help="candidates that get the blind stranger test")
@@ -49,6 +50,8 @@ def main():
         lo, hi = (a.episodes.split("-") + [a.episodes])[:2]; eps = [e for e in eps if int(lo) <= e.num <= int(hi)]
     if not eps: sys.exit("no episodes found")
     llm = LLM(a.provider, a.model, base_url=a.base_url)
+    verify_model = a.verify_model or os.environ.get("LLM_VERIFY_MODEL") or a.model or llm.model
+    verifier_llm = LLM(a.provider, verify_model, base_url=a.base_url)
     by_num = {e.num: e for e in eps}
     print(f"[1/5] parsed {len(eps)} episodes, {sum(len(e.events) for e in eps)} events")
 
@@ -64,10 +67,14 @@ def main():
             cs = [c for c in pool if c.segments[0].ep == ep.num]
             S.stage_a(llm, ep, by_num.get(ep.num - 1), cs, by_num)
         for c in pool: S.finalize(c, True)
-        print(f"[4/5] blind stranger test on top {a.verify_top}")
-        top = sorted(pool, key=lambda c: -c.final)[:a.verify_top]
-        S.stage_b(llm, top, by_num)
+        print(f"[4/5] blind stranger test with {verifier_llm.provider}:{verifier_llm.model}")
+        scored_pool = [c for c in pool if c.llm and not c.verify.get("unscored") and not c.verify.get("suspect")]
+        top = sorted(scored_pool, key=lambda c: -c.final)[:a.verify_top]
+        S.stage_b(verifier_llm, top, by_num)
         for c in pool: S.finalize(c, True)
+        verified_top = [c for c in top if "understandable" in c.verify]
+        missing_top_ids = [c.cid for c in top if "understandable" not in c.verify]
+        print(f"  verified {len(verified_top)}/{len(top)} top candidates; unverified ids: {missing_top_ids}")
         n_scored = sum(1 for c in pool if c.llm)
         n_unscored = sum(1 for c in pool if c.verify.get("unscored"))
         n_verified = sum(1 for c in pool if "understandable" in c.verify)
@@ -89,14 +96,19 @@ def main():
 
     mode = f"{llm.provider}:{llm.model}" if llm.enabled else "heuristic-baseline (no LLM)"
     n_unscored = sum(1 for c in pool if c.verify.get("unscored"))
+    n_suspect = sum(1 for c in pool if c.verify.get("suspect"))
     m_counts = {"id": 0, "time": 0, "position": 0}
     for c in pool:
         m = c.llm.get("_match")
         if m in m_counts:
             m_counts[m] += 1
     match_str = f"ID matching: id={m_counts['id']}, time={m_counts['time']}, position={m_counts['position']}"
+    v_calls = verifier_llm.calls if llm.enabled else 0
+    v_cached = verifier_llm.cached if llm.enabled else 0
+    v_tin = verifier_llm.tokens_in if llm.enabled else 0
+    v_tout = verifier_llm.tokens_out if llm.enabled else 0
     md = [f"# Promo report\n\nMode: **{mode}** | episodes: {len(eps)} | shortlisted: {len(pool)} | output: {len(rows)} | Unscored by LLM (excluded): {n_unscored} of {len(pool)} | {match_str}\n",
-          f"Runtime {time.time()-t0:.1f}s | LLM calls {llm.calls} (+{llm.cached} cached) | tokens in/out {llm.tokens_in}/{llm.tokens_out}\n",
+          f"Runtime {time.time()-t0:.1f}s | Scorer calls {llm.calls} (+{llm.cached} cached), tokens {llm.tokens_in}/{llm.tokens_out} | Verifier calls {v_calls} (+{v_cached} cached), tokens {v_tin}/{v_tout} | Suspect matches dropped: {n_suspect}\n",
           "## Ranked promos (post #1 first)\n"]
     for r in rows:
         md.append(f"### #{r['rank']}  {r['segments']}  ({r['length_s']}s, score {r['score']}, {r['type']})\n"

@@ -6,6 +6,15 @@ def _norm_id(val):
     if not isinstance(val, str): val = str(val)
     return val.strip().strip("'\"“”`").lower()
 
+def hook_check(c):
+    hl = (c.llm.get("hook_line") or "").lower()
+    words = re.findall(r"[a-z']{4,}", hl)
+    if not words:
+        return 1.0
+    clip_text = " ".join((e.text or "") for e in c.events).lower()
+    matches = sum(1 for w in words if w in clip_text)
+    return matches / len(words)
+
 def _extract_times(s):
     matches = re.findall(r"\d{1,2}:\d{2}(?:\.\d+)?", str(s))
     times = []
@@ -138,6 +147,16 @@ Return JSON: {{"scores":[{{"id":"...","hook":0,"hook_line":"","cliffhanger":0,"c
             for c in chunk:
                 if c.cid in r_matched: c.llm = r_matched[c.cid]
 
+    dropped = 0
+    for c in cands:
+        if c.llm and c.llm.get("_match") in ("time", "position"):
+            if hook_check(c) < 0.25:
+                c.llm = {}
+                c.verify = {"rejected": True, "issue": "match_suspect: hook_line does not appear in this clip", "unscored": True, "suspect": True}
+                dropped += 1
+    if dropped > 0:
+        print(f"[score] ep {ep.num}: dropped {dropped} suspect matches", file=sys.stderr)
+
 VERIFY_SYSTEM = """You are a viewer who has NEVER seen this show, scrolling a social feed. You are given only a raw clip \
 transcript. Judge honestly as that stranger. Reply with JSON only."""
 
@@ -161,6 +180,9 @@ Return JSON: {{"clips":[{{"id":"...","summary":"","understandable":0,"ending_unr
 
 def finalize(c, use_llm):
     """Final 0-10 score and reject flag. Transparent weighted formula."""
+    if c.verify and c.verify.get("suspect"):
+        c.final = 0.0
+        return
     if use_llm and not c.llm:
         c.final = 0.0
         c.verify = {"rejected": True, "issue": "not scored by LLM", "unscored": True}
