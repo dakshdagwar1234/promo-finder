@@ -65,6 +65,8 @@ class LLM:
                     last_err = repr(e)
                 print(f"[llm] attempt {attempt + 1}/{retries} failed: {last_err}", file=sys.stderr)
                 if code == 429:
+                    if "tokens per day" in raw_body.lower():
+                        raise RuntimeError("Daily token limit reached; wait and rerun, the cache keeps all finished calls. " + body[:300])
                     waits_429 += 1
                     if waits_429 > 30:
                         raise RuntimeError(f"LLM failed after retries. Last error: {last_err}")

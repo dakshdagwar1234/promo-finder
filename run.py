@@ -89,7 +89,13 @@ def main():
 
     mode = f"{llm.provider}:{llm.model}" if llm.enabled else "heuristic-baseline (no LLM)"
     n_unscored = sum(1 for c in pool if c.verify.get("unscored"))
-    md = [f"# Promo report\n\nMode: **{mode}** | episodes: {len(eps)} | shortlisted: {len(pool)} | output: {len(rows)} | Unscored by LLM (excluded): {n_unscored} of {len(pool)}\n",
+    m_counts = {"id": 0, "time": 0, "position": 0}
+    for c in pool:
+        m = c.llm.get("_match")
+        if m in m_counts:
+            m_counts[m] += 1
+    match_str = f"ID matching: id={m_counts['id']}, time={m_counts['time']}, position={m_counts['position']}"
+    md = [f"# Promo report\n\nMode: **{mode}** | episodes: {len(eps)} | shortlisted: {len(pool)} | output: {len(rows)} | Unscored by LLM (excluded): {n_unscored} of {len(pool)} | {match_str}\n",
           f"Runtime {time.time()-t0:.1f}s | LLM calls {llm.calls} (+{llm.cached} cached) | tokens in/out {llm.tokens_in}/{llm.tokens_out}\n",
           "## Ranked promos (post #1 first)\n"]
     for r in rows:

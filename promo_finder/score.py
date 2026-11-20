@@ -1,10 +1,67 @@
 """LLM judgment layer. The model only scores/picks from code-generated candidates (ids), never emits timestamps."""
-import json, sys
+import json, sys, re
 from .candidates import fmt
 
 def _norm_id(val):
     if not isinstance(val, str): val = str(val)
     return val.strip().strip("'\"“”`").lower()
+
+def _extract_times(s):
+    matches = re.findall(r"\d{1,2}:\d{2}(?:\.\d+)?", str(s))
+    times = []
+    for m in matches:
+        parts = m.split(":")
+        sec = int(parts[0]) * 60 + float(parts[1])
+        times.append(sec)
+    return times
+
+def match_results(items, returned):
+    matched = {}
+    used_ret = set()
+
+    # a) exact match on normalised id
+    for item in items:
+        target_nid = _norm_id(item.cid)
+        for idx, r in enumerate(returned):
+            if idx in used_ret or not isinstance(r, dict):
+                continue
+            if _norm_id(r.get("id", "")) == target_nid:
+                r["_match"] = "id"
+                matched[item.cid] = r
+                used_ret.add(idx)
+                break
+
+    # b) match on the last two timestamps
+    for item in items:
+        if item.cid in matched:
+            continue
+        c_times = _extract_times(item.cid)
+        if len(c_times) < 2:
+            continue
+        candidate_matches = []
+        for idx, r in enumerate(returned):
+            if idx in used_ret or not isinstance(r, dict):
+                continue
+            r_times = _extract_times(r.get("id", ""))
+            if len(r_times) >= 2 and abs(c_times[-2] - r_times[-2]) < 0.5 and abs(c_times[-1] - r_times[-1]) < 0.5:
+                candidate_matches.append((idx, r))
+        if len(candidate_matches) == 1:
+            idx, r = candidate_matches[0]
+            r["_match"] = "time"
+            matched[item.cid] = r
+            used_ret.add(idx)
+
+    # c) positional
+    if len(returned) == len(items):
+        for idx, item in enumerate(items):
+            if item.cid not in matched and idx not in used_ret:
+                r = returned[idx]
+                if isinstance(r, dict):
+                    r["_match"] = "position"
+                    matched[item.cid] = r
+                    used_ret.add(idx)
+
+    return matched
 
 SYSTEM = """You are a senior short-drama marketing editor (ReelShort / DramaBox style). You judge promo clips for \
 vertical-video ads. A promo must: (1) HOOK - something in its first 3 seconds that stops a scrolling viewer (a slap, \
@@ -42,13 +99,17 @@ why (ONE sentence on why it would or would not work as an ad).
 Return JSON: {{"scores":[{{"id":"...","hook":0,"hook_line":"","cliffhanger":0,"cliffhanger_desc":"","standalone":0,"intensity":0,"why":""}}]}}"""
     res = llm.complete_json(SYSTEM, prompt)
     scores_list = res.get("scores", []) if isinstance(res, dict) else []
-    by = {_norm_id(s.get("id", "")): s for s in scores_list if isinstance(s, dict) and "id" in s}
+    matched = match_results(cands, scores_list)
     for c in cands:
-        nid = _norm_id(c.cid)
-        if nid in by: c.llm = by[nid]
+        if c.cid in matched: c.llm = matched[c.cid]
+
+    if any(c.llm.get("_match") in ("time", "position") for c in cands if c.llm):
+        exp_ids = [c.cid for c in cands[:3]]
+        got_ids = [r.get("id", "") for r in scores_list[:3] if isinstance(r, dict)]
+        print(f"[score] ep {ep.num}: id mismatch, expected {exp_ids} got {got_ids}", file=sys.stderr)
 
     missing = [c for c in cands if not c.llm]
-    if missing:
+    if len(scores_list) < len(cands) and missing:
         first_item = scores_list[0] if scores_list and isinstance(scores_list[0], dict) else {}
         first_keys = list(first_item.keys())
         raw_text = getattr(llm, "last_raw", None)
@@ -73,10 +134,9 @@ You MUST return exactly one entry for each of the {len(chunk)} candidate ids lis
 Return JSON: {{"scores":[{{"id":"...","hook":0,"hook_line":"","cliffhanger":0,"cliffhanger_desc":"","standalone":0,"intensity":0,"why":""}}]}}"""
             retry_res = llm.complete_json(SYSTEM, retry_prompt)
             r_scores = retry_res.get("scores", []) if isinstance(retry_res, dict) else []
-            r_by = {_norm_id(s.get("id", "")): s for s in r_scores if isinstance(s, dict) and "id" in s}
+            r_matched = match_results(chunk, r_scores)
             for c in chunk:
-                nid = _norm_id(c.cid)
-                if nid in r_by: c.llm = r_by[nid]
+                if c.cid in r_matched: c.llm = r_matched[c.cid]
 
 VERIFY_SYSTEM = """You are a viewer who has NEVER seen this show, scrolling a social feed. You are given only a raw clip \
 transcript. Judge honestly as that stranger. Reply with JSON only."""
@@ -94,9 +154,10 @@ problem, or "none").
 
 Return JSON: {{"clips":[{{"id":"...","summary":"","understandable":0,"ending_unresolved":0,"would_tap_next":0,"issue":""}}]}}"""
         res = llm.complete_json(VERIFY_SYSTEM, prompt)
-        by = {s["id"]: s for s in res.get("clips", [])}
+        clips_list = res.get("clips", []) if isinstance(res, dict) else []
+        matched = match_results(chunk, clips_list)
         for c in chunk:
-            if c.cid in by: c.verify = by[c.cid]
+            if c.cid in matched: c.verify = matched[c.cid]
 
 def finalize(c, use_llm):
     """Final 0-10 score and reject flag. Transparent weighted formula."""
