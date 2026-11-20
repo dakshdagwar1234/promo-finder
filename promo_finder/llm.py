@@ -1,7 +1,7 @@
 """Model-agnostic LLM layer. Plain HTTP, no SDKs. Swap model/provider via env or CLI.
 Providers: gemini | anthropic | openai (any OpenAI-compatible endpoint) | none (heuristic only).
 Responses are cached on disk by prompt hash, so re-runs are free and interview re-runs are fast."""
-import os, json, time, hashlib, urllib.request, urllib.error, re
+import os, sys, json, time, hashlib, urllib.request, urllib.error, re
 
 CACHE = os.environ.get("PROMO_CACHE", ".llm_cache")
 
@@ -24,6 +24,7 @@ class LLM:
         if os.path.exists(cp):
             self.cached += 1
             return json.load(open(cp, encoding="utf-8"))
+        last_err = None
         for attempt in range(retries):
             try:
                 raw = self._call(system, prompt)
@@ -31,11 +32,26 @@ class LLM:
                 json.dump(data, open(cp, "w", encoding="utf-8"))
                 self.calls += 1
                 return data
-            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, KeyError) as e:
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, KeyError, TypeError, IndexError) as e:
                 code = getattr(e, "code", None)
-                if code in (400, 401, 403, 404): raise RuntimeError(f"LLM request rejected ({code}): check key/model name. {e}")
-                time.sleep(2 ** attempt * 2)           # free tiers rate-limit (429): back off
-        raise RuntimeError("LLM failed after retries")
+                if isinstance(e, urllib.error.HTTPError):
+                    body = e.read().decode("utf-8", "ignore")[:500]
+                    last_err = f"HTTP {code}: {body}"
+                    if code in (400, 401, 403, 404):
+                        raise RuntimeError(f"LLM request rejected ({code}): check key/model name. {e} {body}")
+                else:
+                    last_err = repr(e)
+                print(f"[llm] attempt {attempt + 1}/{retries} failed: {last_err}", file=sys.stderr)
+                if code == 429:
+                    ra = e.headers.get("Retry-After") if hasattr(e, "headers") and e.headers else None
+                    try:
+                        wait = min(float(ra), 60.0) if ra is not None else 15 * (attempt + 1)
+                    except (ValueError, TypeError):
+                        wait = 15 * (attempt + 1)
+                    time.sleep(wait)
+                else:
+                    time.sleep(15 * (attempt + 1))
+        raise RuntimeError(f"LLM failed after retries. Last error: {last_err}")
 
     # --- providers -------------------------------------------------------
     def _post(self, url, body, headers):
