@@ -11,6 +11,11 @@ class LLM:
         self.model = model or os.environ.get("LLM_MODEL", "")
         self.key = api_key or os.environ.get("LLM_API_KEY", "")
         self.base = base_url or os.environ.get("LLM_BASE_URL", "")
+        try:
+            self.tpm = int(os.environ.get("LLM_TPM", "0"))
+        except ValueError:
+            self.tpm = 0
+        self.window = []
         self.calls = self.cached = 0
         self.tokens_in = self.tokens_out = 0
         os.makedirs(CACHE, exist_ok=True)
@@ -25,7 +30,22 @@ class LLM:
             self.cached += 1
             return json.load(open(cp, encoding="utf-8"))
         last_err = None
-        for attempt in range(retries):
+        attempt = 0
+        waits_429 = 0
+        while attempt < retries:
+            if self.tpm > 0:
+                est = (len(system) + len(prompt)) // 3 + 1500
+                if est < self.tpm:
+                    while True:
+                        now = time.time()
+                        self.window = [w for w in self.window if now - w[0] < 60]
+                        if sum(w[1] for w in self.window) + est <= self.tpm:
+                            break
+                        wait = 60 - (now - self.window[0][0]) + 0.5
+                        if wait > 0:
+                            print(f"[llm] throttle: waiting {wait:.1f}s to stay under TPM", file=sys.stderr)
+                            time.sleep(wait)
+                    self.window.append((time.time(), est))
             try:
                 raw = self._call(system, prompt)
                 data = _parse_json(raw)
@@ -35,22 +55,32 @@ class LLM:
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError, KeyError, TypeError, IndexError) as e:
                 code = getattr(e, "code", None)
                 if isinstance(e, urllib.error.HTTPError):
-                    body = e.read().decode("utf-8", "ignore")[:500]
+                    raw_body = e.read().decode("utf-8", "ignore")
+                    body = raw_body[:500]
                     last_err = f"HTTP {code}: {body}"
                     if code in (400, 401, 403, 404):
                         raise RuntimeError(f"LLM request rejected ({code}): check key/model name. {e} {body}")
                 else:
+                    raw_body = ""
                     last_err = repr(e)
                 print(f"[llm] attempt {attempt + 1}/{retries} failed: {last_err}", file=sys.stderr)
                 if code == 429:
-                    ra = e.headers.get("Retry-After") if hasattr(e, "headers") and e.headers else None
-                    try:
-                        wait = min(float(ra), 60.0) if ra is not None else 15 * (attempt + 1)
-                    except (ValueError, TypeError):
-                        wait = 15 * (attempt + 1)
+                    waits_429 += 1
+                    if waits_429 > 30:
+                        raise RuntimeError(f"LLM failed after retries. Last error: {last_err}")
+                    m = re.search(r"try again in ([0-9.]+)s", raw_body)
+                    if m:
+                        wait = min(float(m.group(1)) + 1.5, 90.0)
+                    else:
+                        ra = e.headers.get("Retry-After") if hasattr(e, "headers") and e.headers else None
+                        try:
+                            wait = min(float(ra) + 1.5, 90.0) if ra is not None else min(15.0 * waits_429, 90.0)
+                        except (ValueError, TypeError):
+                            wait = min(15.0 * waits_429, 90.0)
                     time.sleep(wait)
                 else:
-                    time.sleep(15 * (attempt + 1))
+                    attempt += 1
+                    time.sleep(15 * attempt)
         raise RuntimeError(f"LLM failed after retries. Last error: {last_err}")
 
     # --- providers -------------------------------------------------------

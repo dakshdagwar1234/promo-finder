@@ -59,7 +59,8 @@ def main():
 
     if llm.enabled:
         print(f"[3/5] LLM scoring with {llm.provider}:{llm.model} (1 call per episode)")
-        for ep in eps:
+        for i, ep in enumerate(eps, 1):
+            print(f"  scoring episode {i}/{len(eps)} (cached: {llm.cached}, calls: {llm.calls})")
             cs = [c for c in pool if c.segments[0].ep == ep.num]
             S.stage_a(llm, ep, by_num.get(ep.num - 1), cs, by_num)
         for c in pool: S.finalize(c, True)
@@ -91,7 +92,14 @@ def main():
     rej = [c for c in sorted(pool, key=lambda c: -c.final) if c.verify.get("rejected")][:10]
     md.append("## Highest-scoring clips REJECTED by the verify pass (see failure analysis)\n")
     for c in rej:
-        md.append(f"- {seg_str(c)} score {c.final:.1f}: " + (c.verify.get("issue") or "low cliffhanger/standalone (heuristic)"))
+        v = c.verify or {}
+        issue = (v.get("issue") or "").strip()
+        if issue and issue.lower() != "none":
+            reason = issue
+        else:
+            scores = [f"{k}={v[k]}" for k in ("understandable", "ending_unresolved") if k in v]
+            reason = ", ".join(scores) if scores else "low cliffhanger/standalone (heuristic)"
+        md.append(f"- {seg_str(c)} score {c.final:.1f}: {reason}")
     open(f"{a.out}/report.md", "w", encoding="utf-8").write("\n".join(md))
     print(f"[5/5] wrote {a.out}/promos.json, promos.csv, report.md, all_candidates.json  ({time.time()-t0:.1f}s)")
     for r in rows[:5]: print(f"  #{r['rank']} {r['segments']}  score {r['score']}")
