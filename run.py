@@ -68,6 +68,11 @@ def main():
         top = sorted(pool, key=lambda c: -c.final)[:a.verify_top]
         S.stage_b(llm, top, by_num)
         for c in pool: S.finalize(c, True)
+        n_scored = sum(1 for c in pool if c.llm)
+        n_unscored = sum(1 for c in pool if c.verify.get("unscored"))
+        n_verified = sum(1 for c in pool if "understandable" in c.verify)
+        n_rejected = sum(1 for c in pool if c.verify.get("rejected"))
+        print(f"  {n_scored} scored, {n_unscored} unscored, {n_verified} verified, {n_rejected} rejected")
     else:
         print("[3-4/5] no LLM configured -> heuristic baseline only (set --provider/LLM_API_KEY for the real run)")
         for c in pool: S.finalize(c, False)
@@ -83,13 +88,14 @@ def main():
     json.dump(allrows, open(f"{a.out}/all_candidates.json", "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 
     mode = f"{llm.provider}:{llm.model}" if llm.enabled else "heuristic-baseline (no LLM)"
-    md = [f"# Promo report\n\nMode: **{mode}** | episodes: {len(eps)} | shortlisted: {len(pool)} | output: {len(rows)}\n",
+    n_unscored = sum(1 for c in pool if c.verify.get("unscored"))
+    md = [f"# Promo report\n\nMode: **{mode}** | episodes: {len(eps)} | shortlisted: {len(pool)} | output: {len(rows)} | Unscored by LLM (excluded): {n_unscored} of {len(pool)}\n",
           f"Runtime {time.time()-t0:.1f}s | LLM calls {llm.calls} (+{llm.cached} cached) | tokens in/out {llm.tokens_in}/{llm.tokens_out}\n",
           "## Ranked promos (post #1 first)\n"]
     for r in rows:
         md.append(f"### #{r['rank']}  {r['segments']}  ({r['length_s']}s, score {r['score']}, {r['type']})\n"
                   f"- **Hook:** {r['hook']}\n- **Cliffhanger:** {r['cliffhanger']}\n- **Why it works:** {r['why_it_works']}\n")
-    rej = [c for c in sorted(pool, key=lambda c: -c.final) if c.verify.get("rejected")][:10]
+    rej = [c for c in sorted(pool, key=lambda c: -c.final) if c.verify.get("rejected") and not c.verify.get("unscored")][:10]
     md.append("## Highest-scoring clips REJECTED by the verify pass (see failure analysis)\n")
     for c in rej:
         v = c.verify or {}

@@ -1,6 +1,10 @@
 """LLM judgment layer. The model only scores/picks from code-generated candidates (ids), never emits timestamps."""
-import json
+import json, sys
 from .candidates import fmt
+
+def _norm_id(val):
+    if not isinstance(val, str): val = str(val)
+    return val.strip().strip("'\"“”`").lower()
 
 SYSTEM = """You are a senior short-drama marketing editor (ReelShort / DramaBox style). You judge promo clips for \
 vertical-video ads. A promo must: (1) HOOK - something in its first 3 seconds that stops a scrolling viewer (a slap, \
@@ -37,9 +41,42 @@ why (ONE sentence on why it would or would not work as an ad).
 
 Return JSON: {{"scores":[{{"id":"...","hook":0,"hook_line":"","cliffhanger":0,"cliffhanger_desc":"","standalone":0,"intensity":0,"why":""}}]}}"""
     res = llm.complete_json(SYSTEM, prompt)
-    by = {s["id"]: s for s in res.get("scores", [])}
+    scores_list = res.get("scores", []) if isinstance(res, dict) else []
+    by = {_norm_id(s.get("id", "")): s for s in scores_list if isinstance(s, dict) and "id" in s}
     for c in cands:
-        if c.cid in by: c.llm = by[c.cid]
+        nid = _norm_id(c.cid)
+        if nid in by: c.llm = by[nid]
+
+    missing = [c for c in cands if not c.llm]
+    if missing:
+        first_item = scores_list[0] if scores_list and isinstance(scores_list[0], dict) else {}
+        first_keys = list(first_item.keys())
+        raw_text = getattr(llm, "last_raw", None)
+        raw_len_str = f"; raw length: {len(raw_text)}" if raw_text is not None else f"; raw length: {len(json.dumps(res))}"
+        missing_ids = ", ".join(c.cid for c in missing)
+        print(f"[score] ep {ep.num}: model returned {len(scores_list)}/{len(cands)} scores; missing ids: {missing_ids}; first item keys: {first_keys}{raw_len_str}", file=sys.stderr)
+
+        for i in range(0, len(missing), 3):
+            chunk = missing[i:i + 3]
+            retry_body = "\n\n".join(f"### CANDIDATE {c.cid} (length {c.length:.0f}s)\n{render(c, ep_by_num)}" for c in chunk)
+            retry_prompt = f"""{ctx}
+
+Score each candidate promo clip below. Camera directions are omitted.
+For each candidate return: hook (0-10, judged ONLY on its first 3 seconds), hook_line (the exact line/action in the \
+first 3s), cliffhanger (0-10, judged on the final ~4s: is something left unresolved?), cliffhanger_desc (what is left \
+hanging, <=15 words), standalone (0-10, could a stranger follow it using only the clip?), intensity (0-10), \
+why (ONE sentence on why it would or would not work as an ad).
+You MUST return exactly one entry for each of the {len(chunk)} candidate ids listed, no more, no fewer.
+
+{retry_body}
+
+Return JSON: {{"scores":[{{"id":"...","hook":0,"hook_line":"","cliffhanger":0,"cliffhanger_desc":"","standalone":0,"intensity":0,"why":""}}]}}"""
+            retry_res = llm.complete_json(SYSTEM, retry_prompt)
+            r_scores = retry_res.get("scores", []) if isinstance(retry_res, dict) else []
+            r_by = {_norm_id(s.get("id", "")): s for s in r_scores if isinstance(s, dict) and "id" in s}
+            for c in chunk:
+                nid = _norm_id(c.cid)
+                if nid in r_by: c.llm = r_by[nid]
 
 VERIFY_SYSTEM = """You are a viewer who has NEVER seen this show, scrolling a social feed. You are given only a raw clip \
 transcript. Judge honestly as that stranger. Reply with JSON only."""
@@ -63,6 +100,10 @@ Return JSON: {{"clips":[{{"id":"...","summary":"","understandable":0,"ending_unr
 
 def finalize(c, use_llm):
     """Final 0-10 score and reject flag. Transparent weighted formula."""
+    if use_llm and not c.llm:
+        c.final = 0.0
+        c.verify = {"rejected": True, "issue": "not scored by LLM", "unscored": True}
+        return
     h = c.h
     if use_llm and c.llm:
         L, V = c.llm, c.verify
